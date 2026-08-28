@@ -1,0 +1,44 @@
+// mayhem/kat_main.go.src — dynamically-linked known-answer probe for kyverno's
+// engine anchor parser. `import "C"` (cgo) forces a DYNAMICALLY LINKED binary so
+// the gate's LD_PRELOAD sabotage shim can neuter it; a statically-linked Go test
+// binary would be immune and give a false-green oracle — exactly the trap
+// netnew §4 warns about with `go test` alone.
+//
+// Staged by mayhem/build.sh into _mayhem_harness/anchor/kat/main.go, it imports
+// the staged `anchor` package (a verbatim copy of pkg/engine/anchor/anchor.go)
+// and runs Parse() over fixed inputs through the REAL parser, printing the
+// decoded fields in a fixed, greppable format for mayhem/test.sh to assert.
+package main
+
+// #include <stdint.h>
+import "C"
+
+import (
+	"fmt"
+
+	anchor "github.com/kyverno/kyverno/_mayhem_harness/anchor"
+)
+
+func main() {
+	// A global-condition anchor: modifier '<' (Global), key "foo".
+	a := anchor.Parse("<(foo)")
+	if a == nil {
+		fmt.Println("KAT_PARSE=nil")
+		return
+	}
+	fmt.Printf("KAT_TYPE=%s\n", string(a.Type()))
+	fmt.Printf("KAT_KEY=%s\n", a.Key())
+	fmt.Printf("KAT_STR=%s\n", a.String())
+
+	// An add-if-not-present anchor: modifier '+', key "bar".
+	b := anchor.Parse("+(bar)")
+	fmt.Printf("KAT_TYPE2=%s\n", string(b.Type()))
+	fmt.Printf("KAT_KEY2=%s\n", b.Key())
+
+	// A plain (non-anchor) string must Parse to nil.
+	if anchor.Parse("plainkey") == nil {
+		fmt.Println("KAT_NONANCHOR=nil")
+	} else {
+		fmt.Println("KAT_NONANCHOR=notnil")
+	}
+}

@@ -1,0 +1,43 @@
+// mayhem/harness_anchor.go.src — native testing.F harness for kyverno's engine
+// pattern-ANCHOR parser (pkg/engine/anchor.Parse — the surface upstream's
+// pkg/engine/anchor/fuzz_test.go:FuzzAnchorParseTest drives).
+//
+// WHY a staged mini-module (netnew §6 Go / port-go): the real kyverno module
+// pins `go 1.26.6` and drags the FULL Kubernetes api-machinery + controller-
+// runtime closure through its go.mod, and even the anchor package itself pulls
+// pkg/logging → sigs.k8s.io/controller-runtime via handlers.go. Parse() itself,
+// though, needs nothing but stdlib (regexp + strings). So mayhem/build.sh copies
+// ONLY pkg/engine/anchor/anchor.go (verbatim) into a fresh, standalone Go module
+// at _mayhem_harness/anchor and points go-118-fuzz-build there. That isolates the
+// fuzz + KAT builds from kyverno's giant dependency graph entirely — the harness
+// module's only non-stdlib dep is the go-118-fuzz-build /testing shim itself.
+//
+// Declared `package anchor` (the copied package) so it reaches Parse directly.
+// Byte-in, NO file I/O (netnew §3): the fuzzer's bytes become the parser input;
+// starter seeds are Mayhem's job via the Mayhemfile testsuite: directive.
+package anchor
+
+import "testing"
+
+// FuzzAnchorParseTest drives Parse() with an arbitrary string — the same surface
+// as upstream pkg/engine/anchor/fuzz_test.go.
+func FuzzAnchorParseTest(f *testing.F) {
+	// A handful of representative anchor strings across the modifier set.
+	f.Add("(condition)")
+	f.Add("<(global)")
+	f.Add("X(negation)")
+	f.Add("+(addIfNotPresent)")
+	f.Add("=(equality)")
+	f.Add("^(existence)")
+	f.Add("not-an-anchor")
+
+	f.Fuzz(func(t *testing.T, data string) {
+		a := Parse(data)
+		if a != nil {
+			// Exercise the accessors on any successfully parsed anchor.
+			_ = a.Type()
+			_ = a.Key()
+			_ = a.String()
+		}
+	})
+}
