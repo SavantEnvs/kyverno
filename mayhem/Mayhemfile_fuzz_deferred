@@ -1,0 +1,8 @@
+project: savantenvs/kyverno
+target: fuzz_deferred-mined-12b82d8
+testsuite:
+  - https://$MAYHEM_DOMAIN/$MAYHEM_PROJECT/$MAYHEM_TARGET/testsuite.tar
+  - file://mayhem/fuzz_deferred-mined-12b82d8/testsuite
+cmds:
+  - cmd: /mayhem/fuzz_deferred
+    libfuzzer: true
