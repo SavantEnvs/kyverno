@@ -1,0 +1,138 @@
+// mayhem/harness_deferred.go.src — native testing.F harness for kyverno's engine context
+// deferred loaders (pkg/engine/context/deferred.go), driven through the public Interface.
+//
+// The fuzzer's bytes are a small script of context operations (Checkpoint / Reset / Restore /
+// AddDeferredLoader / Query / AddVariable). A deferred loader may itself call Reset / Restore /
+// Checkpoint from inside LoadData, like a real context-entry loader that re-enters the context.
+// Byte-in, no file I/O; starter seeds ship through the Mayhemfile testsuite: directive.
+// go-118-fuzz-build decodes a []byte argument as a 4-byte big-endian length followed by the
+// bytes, so an input is that length (the script's size) and then the script itself.
+package deferred
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/go-logr/logr"
+
+	"github.com/kyverno/kyverno/pkg/config"
+	kctx "github.com/kyverno/kyverno/pkg/engine/context"
+	"github.com/kyverno/kyverno/pkg/engine/jmespath"
+)
+
+var names = [...]string{"alpha", "beta", "gamma", "delta"}
+
+const (
+	actNone = iota
+	actReset
+	actRestore
+	actCheckpoint
+)
+
+// inLoad keeps a loader's re-entrant action from recursing through Reset's own reloads;
+// actions bounds how many a script may take (a loader that resets or checkpoints on every
+// load would otherwise re-match itself forever, a hang of the modelled loader, not of kyverno).
+var (
+	inLoad  int
+	actions int
+)
+
+const maxActions = 8
+
+type loader struct {
+	ctx    kctx.Interface
+	name   string
+	act    byte
+	sticky bool
+	loaded bool
+}
+
+func (l *loader) HasLoaded() bool { return l.loaded }
+
+func (l *loader) LoadData() error {
+	inLoad++
+	defer func() { inLoad-- }()
+	if err := l.ctx.AddVariable(l.name, l.name+"-value"); err != nil {
+		return err
+	}
+	if inLoad == 1 && l.act != actNone && actions < maxActions {
+		actions++
+		switch l.act {
+		case actReset:
+			l.ctx.Reset()
+		case actRestore:
+			l.ctx.Restore()
+		case actCheckpoint:
+			l.ctx.Checkpoint()
+		}
+	}
+	l.loaded = l.sticky
+	return nil
+}
+
+type script struct {
+	data []byte
+	pos  int
+}
+
+func (s *script) next() byte {
+	if s.pos >= len(s.data) {
+		return 0
+	}
+	b := s.data[s.pos]
+	s.pos++
+	return b
+}
+
+func (s *script) more() bool { return s.pos < len(s.data) }
+
+// Run decodes data into context operations and applies them.
+func Run(data []byte) {
+	inLoad, actions = 0, 0
+	ctx := kctx.NewContext(jmespath.New(config.NewDefaultConfiguration(false)))
+	s := &script{data: data}
+	depth := 0
+	for ops := 0; s.more() && ops < 64; ops++ {
+		switch s.next() % 6 {
+		case 0:
+			if depth < 4 {
+				ctx.Checkpoint()
+				depth++
+			}
+		case 1:
+			ctx.Reset()
+		case 2:
+			ctx.Restore()
+			if depth > 0 {
+				depth--
+			}
+		case 3:
+			name := names[s.next()%byte(len(names))]
+			flags := s.next()
+			l := &loader{ctx: ctx, name: name, act: flags & 3, sticky: flags&4 != 0}
+			if dl, err := kctx.NewDeferredLoader(name, l, logr.Discard()); err == nil {
+				_ = ctx.AddDeferredLoader(dl)
+			}
+		case 4:
+			mask := s.next()
+			var picked []string
+			for i, n := range names {
+				if mask&(1<<uint(i)) != 0 {
+					picked = append(picked, n)
+				}
+			}
+			if len(picked) > 0 {
+				_, _ = ctx.Query("[" + strings.Join(picked, ", ") + "]")
+			}
+		case 5:
+			_ = ctx.AddVariable(names[s.next()%byte(len(names))], "v")
+		}
+	}
+}
+
+// FuzzDeferredLoaders runs an arbitrary operation script against a fresh context.
+func FuzzDeferredLoaders(f *testing.F) {
+	f.Fuzz(func(t *testing.T, data []byte) {
+		Run(data)
+	})
+}
