@@ -1,0 +1,69 @@
+// mayhem/kat_main.go.src — dynamically-linked known-answer probe for kyverno's deferred context
+// loaders. `import "C"` (cgo) forces a DYNAMICALLY LINKED binary so the gate's LD_PRELOAD sabotage
+// shim can neuter it; a statically-linked Go test binary would be immune (netnew §4).
+//
+// Staged by mayhem/build.sh into _mayhem_harness/kat/main.go. It drives the REAL
+// pkg/engine/context deferred loaders over fixed inputs and prints the answers in a fixed,
+// greppable format for mayhem/test.sh to assert.
+package main
+
+// #include <stdint.h>
+import "C"
+
+import (
+	"fmt"
+
+	"github.com/go-logr/logr"
+
+	"github.com/kyverno/kyverno/pkg/config"
+	kctx "github.com/kyverno/kyverno/pkg/engine/context"
+	"github.com/kyverno/kyverno/pkg/engine/jmespath"
+)
+
+type loader struct {
+	ctx    kctx.Interface
+	name   string
+	value  string
+	loaded bool
+	calls  *int
+}
+
+func (l *loader) HasLoaded() bool { return l.loaded }
+
+func (l *loader) LoadData() error {
+	*l.calls++
+	if err := l.ctx.AddVariable(l.name, l.value); err != nil {
+		return err
+	}
+	l.loaded = true
+	return nil
+}
+
+func add(ctx kctx.Interface, name, value string, calls *int) {
+	l := &loader{ctx: ctx, name: name, value: value, calls: calls}
+	dl, err := kctx.NewDeferredLoader(name, l, logr.Discard())
+	if err != nil {
+		panic(err)
+	}
+	if err := ctx.AddDeferredLoader(dl); err != nil {
+		panic(err)
+	}
+}
+
+func main() {
+	ctx := kctx.NewContext(jmespath.New(config.NewDefaultConfiguration(false)))
+	var one, two int
+	add(ctx, "one", "1", &one)
+	add(ctx, "two", "2", &two)
+
+	v, err := ctx.Query("one")
+	fmt.Printf("KAT_ONE=%v err=%v\n", v, err)
+	fmt.Printf("KAT_CALLS=%d,%d\n", one, two)
+
+	v, err = ctx.Query("[one, two]")
+	fmt.Printf("KAT_BOTH=%v err=%v\n", v, err)
+	fmt.Printf("KAT_CALLS2=%d,%d\n", one, two)
+
+	_, err = ctx.Query("oneTwoThree")
+	fmt.Printf("KAT_MISMATCH_ERR=%v\n", err != nil)
+}
